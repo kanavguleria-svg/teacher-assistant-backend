@@ -1,6 +1,6 @@
-# Teacher Assistant Backend
+# Vidya Setu Backend
 
-Django backend project for Teacher Assistant application.
+Django backend project for Vidya Setu application.
 
 ## Setup Instructions
 
