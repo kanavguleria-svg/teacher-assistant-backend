@@ -3,6 +3,7 @@ Django settings for config project.
 """
 
 from pathlib import Path
+import os
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -13,6 +14,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-change-this-in-production'
+
+# Load secrets from environment variables. Do NOT commit real API keys to git.
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
