@@ -14,11 +14,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-change-this-in-production'
 
+OPENAI_API_KEY="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"
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
 ALLOWED_HOSTS = ['*']
-
 
 # Application definition
 
@@ -30,6 +31,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'api',  # Your app
+    'database',
 ]
 
 MIDDLEWARE = [
@@ -65,11 +67,14 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
-
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'vidyasetu',                      
+        'USER': 'test',
+        'PASSWORD': 'password',
+        'HOST': 'localhost',
+        'PORT': '5432',
     }
 }
 
