@@ -15,9 +15,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-change-this-in-production'
 
-# Load secrets from environment variables. Do NOT commit real API keys to git.
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
@@ -73,8 +70,8 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'vidyasetu',                      
-        'USER': 'test',
-        'PASSWORD': 'password',
+        'USER': 'prajwalahluwalia',
+        'PASSWORD': 'tryCom123',
         'HOST': 'localhost',
         'PORT': '5432',
     }
