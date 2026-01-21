@@ -1,4 +1,4 @@
-from database.content import Chapter, Topic
+from database.content import Chapter, Topic, Question
 
 from django.http import JsonResponse
 import json
@@ -194,36 +194,38 @@ def make_topic_easier(request):
 
     try:
         topic = Topic.objects.get(id=topic_id)
-        original_content = getattr(topic, "topic_content", "")
+        # original_content = getattr(topic, "topic_content", "")
         # Build a prompt for the AI to simplify and provide analogies
-        
-        prompt = f"""
-        Simplify the following content so that a 5-year-old can understand it.
-        - Use very simple words and short sentences.
-        - Provide 2 short analogies that relate the concept to everyday objects or experiences a young child knows.
-        - Return the simplified explanation followed by the analogies. Separate each bullet/line with a newline.
+        original_content = getattr(topic, "topic_content", "")
+        if not topic.simplified_content:
+            prompt = f"""
+            Simplify the following content so that a 5-year-old can understand it.
+            - Use very simple words and short sentences.
+            - Provide 2 short analogies that relate the concept to everyday objects or experiences a young child knows.
+            - Return the simplified explanation followed by the analogies. Separate each bullet/line with a newline.
 
-        Content:
-        """ + original_content
+            Content:
+            """ + original_content
 
-        try:
-            resp = generate_AI_response(prompt=prompt)
-            simplified_content = resp.choices[0].message.content.strip()
-        except Exception as e:
-            return JsonResponse({"error": f"AI simplification failed: {str(e)}"}, status=500)
+            try:
+                resp = generate_AI_response(prompt=prompt)
+                simplified_content = resp.choices[0].message.content.strip()
+            except Exception as e:
+                return JsonResponse({"error": f"AI simplification failed: {str(e)}"}, status=500)
 
-        # Update the existing Topic by saving the simplified content into the
-        # `simplified_content` JSON field (list of strings). Do not create a new
-        # Topic row — keep the OG topic but attach the simplified version.
-        simplified_lines = _split_topic_content(simplified_content)
-        topic.simplified_content = simplified_lines
-        topic.save()
+            # Update the existing Topic by saving the simplified content into the
+            # `simplified_content` JSON field (list of strings). Do not create a new
+            # Topic row — keep the OG topic but attach the simplified version.
+
+            simplified_lines = _split_topic_content(simplified_content)
+            topic.simplified_content = simplified_lines
+            topic.save()
 
         return JsonResponse(
             {
                 "message": "Topic content simplified successfully",
                 "original_topic_id": str(topic.id),
-                "simplified_content": simplified_lines,
+                "simplified_content": topic.simplified_content or [],
             },
             status=200,
             json_dumps_params={"indent": 2},
@@ -293,3 +295,68 @@ def get_topic_details(request):
     
     except Topic.DoesNotExist:
         return JsonResponse({"error": "Topic not found"}, status=404)
+    
+
+@csrf_exempt
+@require_http_methods(["GET"])
+def generate_test_for_chapter(request):
+    # Accept JSON body, but also support query params for GET requests.
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+
+    topic_id = payload.get("topic_id") or request.GET.get("topic_id") or request.POST.get("topic_id")
+    chapter_id = payload.get("chapter_id") or request.GET.get("chapter_id") or request.POST.get("chapter_id")
+    print("the topic id is", topic_id, chapter_id)
+    # Require at least one of topic_id OR chapter_id (not both)
+    if not (topic_id or chapter_id):
+        return JsonResponse({"error": "Please provide topic_id or chapter_id"}, status=400)
+
+    if topic_id:
+        questions_qs = Question.objects.filter(topic_id=topic_id)
+    else:
+        questions_qs = Question.objects.filter(chapter_id=chapter_id)
+
+    # Categorize by level
+    print("Total questions found:", questions_qs)
+    easy_qs = list(questions_qs.filter(question_level=Question.EASY))
+    medium_qs = list(questions_qs.filter(question_level=Question.MEDIUM))
+    hard_qs = list(questions_qs.filter(question_level=Question.HARD))
+
+    # Desired distribution (can be tuned)
+    desired = {Question.EASY: 4, Question.MEDIUM: 4, Question.HARD: 2}
+
+    def _sample_pool(pool, count):
+        if not pool:
+            return []
+        if len(pool) <= count:
+            return pool.copy()
+        return random.sample(pool, count)
+
+    selected = []
+    selected.extend(_sample_pool(easy_qs, desired[Question.EASY]))
+    selected.extend(_sample_pool(medium_qs, desired[Question.MEDIUM]))
+    selected.extend(_sample_pool(hard_qs, desired[Question.HARD]))
+
+    # If we don't have enough questions to meet distribution, fill from remaining
+    remaining = [q for q in questions_qs if q not in selected]
+    while len(selected) < sum(desired.values()) and remaining:
+        selected.append(remaining.pop(0))
+
+    # Shuffle final order
+    random.shuffle(selected)
+
+    questions_out = []
+    for q in selected:
+        questions_out.append({
+            "id": str(q.id),
+            "topic": q.topic.topic_name if q.topic else None,
+            "level": q.get_question_level_display(),
+            "question_text": q.question_text,
+            "options": q.options or {},
+            "correct_answer": q.correct_answer,
+            "explanation": q.explanation,
+        })
+
+    return JsonResponse({"test": questions_out, "count": len(questions_out)}, status=200, json_dumps_params={"indent": 2})

@@ -166,6 +166,12 @@ class Question(models.Model):
 
     question_text = models.TextField()
 
+    question_type = models.CharField(
+        max_length=20,
+        default="MCQ",
+        help_text="Type of question, e.g. MCQ, Theory"
+    )
+
     options = models.JSONField(
         help_text="MCQ options as JSON"
         # Example:

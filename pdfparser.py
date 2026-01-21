@@ -18,7 +18,7 @@ from django.db import transaction
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
-from database.content import Resource, Chapter, Topic
+from database.content import Resource, Chapter, Topic, Question
 
 
 # =========================
@@ -116,7 +116,8 @@ def extract_topics_from_chunk(chunk_text: str) -> dict:
             "topic": "...",
             "main_points": ["...", "..."],
             "simplified_explanation": ["...", "..."],
-            "exercise_questions": [{{"question": "...", "level": "Easy/Medium/Hard"}}]
+            "exercise_questions": [{{"question": "...", "level": "Easy/Medium/Hard", "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}}, "correct_answer": "...", "explanation": "..."}}]
+
             }}
         ]
         }}
@@ -133,7 +134,6 @@ def extract_topics_from_chunk(chunk_text: str) -> dict:
             {"role": "user", "content": prompt},
         ],
     )
-    print(response)
     return safe_json_loads(response.choices[0].message.content)
 
 
@@ -146,9 +146,9 @@ def merge_topics(chunk_results: list[dict]) -> dict:
     merged = defaultdict(lambda: {
         "main_points": set(),
         "simplified_explanation": set(),
-        "exercise_questions": set(),
+        "questions": set(),
     })
-
+    print("Merging topics from chunk results... ", chunk_results)
     for result in chunk_results:
         for topic in result.get("topics", []):
             name = topic.get("topic") or "Untitled"
@@ -166,16 +166,28 @@ def merge_topics(chunk_results: list[dict]) -> dict:
                 merged[name]["simplified_explanation"].add(str(point).strip())
 
             # exercise questions — normalize to tuples (question, level)
-            for q in topic.get("exercise_questions", []):
+            for q in topic.get("questions", []):
+                print(q)
                 if isinstance(q, dict):
                     question_text = str(q.get("question", "")).strip()
                     level = str(q.get("level", "")).strip()
-                    merged[name]["exercise_questions"].add((question_text, level))
+                    correct_answer = str(q.get("correct_answer", "")).strip()
+                    explanation = str(q.get("explanation", "")).strip()
+                    options = q.get("options", {})
+                    if q.get("options") is None or q.get("options") == {}:
+                        qs_type = "Theory"
+                    else:
+                        qs_type = "MCQ"
+
+                    merged[name]["questions"].add((question_text, level, correct_answer, explanation, options, qs_type))
+
                 elif isinstance(q, (list, tuple)) and len(q) >= 2:
-                    merged[name]["exercise_questions"].add((str(q[0]).strip(), str(q[1]).strip()))
+                    merged[name]["questions"].add((str(q[0]).strip(), str(q[1]).strip()))
                 else:
                     # fallback: treat the whole item as the question with unknown level
-                    merged[name]["exercise_questions"].add((str(q).strip(), ""))
+                    merged[name]["questions"].add((str(q).strip(), ""))
+
+            print("The qs are: ", merged[name]["questions"])
 
     topics_out = []
     for name, buckets in merged.items():
@@ -184,8 +196,15 @@ def merge_topics(chunk_results: list[dict]) -> dict:
 
         # convert exercise question tuples back to list of dicts
         exqs = []
-        for q_text, q_level in sorted(buckets["exercise_questions"], key=lambda x: x[0]):
-            exqs.append({"question": q_text, "level": q_level})
+        for q_text, q_level, q_ca, q_explanation, q_options, q_type in sorted(buckets["questions"], key=lambda x: x[0]):
+            exqs.append({
+                "question": q_text,
+                "level": q_level,
+                "correct_answer": q_ca,
+                "explanation": q_explanation,
+                "options": q_options,
+                "question_type": q_type
+            })
 
         topics_out.append({
             "topic": name.title(),
@@ -194,9 +213,9 @@ def merge_topics(chunk_results: list[dict]) -> dict:
             "exercise_questions": exqs,
         })
 
-    # optional debug
-    for t in topics_out:
-        print("Merged topic:", t["topic"], "points:", len(t["main_points"]), "exercises:", len(t["exercise_questions"]))
+    # # optional debug
+    # for t in topics_out:
+    #     print("Merged topic:", t["topic"], "points:", len(t["main_points"]), "exercises:", len(t["exercise_questions"]))
 
     return {"topics": topics_out}
 
@@ -206,7 +225,10 @@ def merge_topics(chunk_results: list[dict]) -> dict:
 # =========================
 
 def synthesize_final_chapter(merged_topics: dict) -> dict:
-    prompt = f"""
+
+    # Build the prompt with a static template (no f-string interpolation of
+    # the JSON example) and concatenate the actual JSON dump afterwards.
+    prompt_template = """
         You are an expert NCERT textbook analyst.
 
         Given the following chapter text, do the following:
@@ -214,31 +236,41 @@ def synthesize_final_chapter(merged_topics: dict) -> dict:
         2. For each topic, give me exam-relevant main points.
         3. Keep language simple and factual.
         4. Generate a simplified explanation for each main point. Add analogies that can be understood by a 10-year-old.
-        5. Extract the exercise questions at the end of the chapter and mark them as Easy, Medium, or Hard. Yoi have to assign difficulty level on your own
-        6. From the Qs generate 6 additional practice questions (2 Easy, 2 Medium, 2 Hard) on topics and mark them as Easy, Medium, or Hard.
-        7. Do NOT hallucinate content not present in the text.
+          5. Extract the exercise questions at the end of the chapter and mark them as Easy, Medium, or Hard. You have to assign difficulty level on your own.
+          6. Additionally, generate 20 extra multiple-choice questions (total across the chapter): 6 Easy, 8 Medium, and 6 Hard. IMPORTANT: these generated questions must be attached to the relevant topic — i.e., for each topic in the "topics" list, include the generated practice questions inside that topic's "questions" (or "exercise_questions") array. Distribute the generated questions as evenly as possible across the topics; if perfect evenness isn't possible, keep distribution balanced and explain the distribution in a short comment field on the chapter-level output (optional).
+              - Each generated question must be in MCQ format with exactly 4 options labeled A/B/C/D, a single correct option key (A/B/C/D) in "correct_answer", and a short explanation.
+          7. Include both the extracted (from text) and the additionally generated questions inside each topic's "questions" array (do NOT put generated questions in a separate top-level list).
+        8. DO NOT hallucinate content not present in the text.
 
         Return the response strictly in JSON with this format:
 
-        {{
+        {
         "chapter_summary": "<5-10 sentence summary>",
         "topics": [
-            {{
-            "topic": "<topic name>",
-            "main_points": ["point 1", "point 2", "point 3", "point 4", "point 5", "point 6"],
-            "simplified_explanation": ["point 1", "point 2", "point 3", "point 4", "point 5", "point 6"],
-            "exercise_questions": [{"question": "...", "level": "Easy/Medium/Hard"}]
-            }}
+            {
+                "topic": "<topic name>",
+                "main_points": ["point 1", "point 2", "point 3", "point 4", "point 5", "point 6"],
+                "simplified_explanation": ["point 1", "point 2", "point 3", "point 4", "point 5", "point 6"],
+                "questions": [{"question": "...", "level": "Easy/Medium/Hard", "options": {}, "correct_answer": "...", "explanation": "..."}]
+            }
         ]
-        }}
+        }
 
-
-    Extracted topics:
-    \"\"\"{json.dumps(merged_topics)}\"\"\"
+    Extracted topics below:
     """
 
+    # Concatenate the JSON dump separately to avoid f-string brace parsing
+    try:
+        merged_json = json.dumps(merged_topics)
+    except Exception:
+        # fallback to str() to ensure we always send something to the LLM
+        merged_json = str(merged_topics)
+
+    prompt = prompt_template + "\n" + '"""' + merged_json + '"""'
+
+    print("Synthesizing final chapter...")
     response = generate_AI_response(prompt=prompt)
-    
+    print(response)
     return safe_json_loads(response.choices[0].message.content)
 
 
@@ -293,8 +325,8 @@ def extract_pdf(pdf_path: Path, standard: int, subject: str) -> dict:
         time.sleep(3)  # soft throttle
 
     merged = merge_topics(chunk_results)
-    print("The merged value is:", merged)
     result = synthesize_final_chapter(merged)
+    print("The result is:", result)
     # Persist results to DB here — extract_pdf is the single source of truth
     ai_data = result
 
@@ -349,18 +381,69 @@ def extract_pdf(pdf_path: Path, standard: int, subject: str) -> dict:
             created_topics = []
             for idx, t in enumerate(topics):
                 main_points = t.get("main_points", [])
+                simplified = t.get("simplified_explanation", [])
                 if main_points and isinstance(main_points[0], list):
                     content = "\n".join([str(x) for x in main_points[0]])
                 else:
                     content = "\n".join([str(x) for x in main_points])
 
+                if simplified and isinstance(simplified, list):
+                    content += "\n\nSimplified Explanation:\n"
+                    if isinstance(simplified[0], list):
+                        content += "\n".join([str(x) for x in simplified[0]])
+                    else:
+                        content += "\n".join([str(x) for x in simplified])
+
                 top = Topic.objects.create(
                     chapter=chapter,
                     topic_name=t.get("topic") or f"Topic {idx+1}",
                     topic_content=content,
+                    simplified_content="\n".join([str(x) for x in simplified]) if simplified and isinstance(simplified, list) else None,
                     order=idx
                 )
                 created_topics.append(str(top.id))
+
+                # Persist exercise questions (if any) into the Question table.
+                # The reducer may place questions under "exercise_questions" or "questions" —
+                # accept both keys for compatibility.
+                for q in (t.get("exercise_questions") or t.get("questions") or []):
+                    print(q)
+                    try:
+                        if isinstance(q, dict):
+                            q_text = str(q.get("question") or q.get("question_text") or "").strip()
+                            q_level_raw = str(q.get("level", "")).strip()
+                        elif isinstance(q, (list, tuple)) and len(q) >= 2:
+                            q_text = str(q[0]).strip()
+                            q_level_raw = str(q[1]).strip()
+                        else:
+                            q_text = str(q).strip()
+                            q_level_raw = ""
+
+                        ql = q_level_raw.lower()
+                        if "easy" in ql:
+                            q_level = Question.EASY
+                        elif "hard" in ql:
+                            q_level = Question.HARD
+                        else:
+                            q_level = Question.MEDIUM
+                        
+                        qca = str(q.get("correct_answer") or "").strip() if isinstance(q, dict) else ""
+                        qe = str(q.get("explanation") or "").strip() if isinstance(q, dict) else ""
+                        qo = q.get("options") if isinstance(q, dict) else {}
+                        if qo is None:
+                            qo = {}
+
+                        Question.objects.create(
+                            chapter=chapter,
+                            topic=top,
+                            question_level=q_level,
+                            question_text=q_text,
+                            options=qo,
+                            correct_answer=qca,
+                            explanation=qe,
+                        )
+                    except Exception as _qe:
+                        print(f"Failed to save question for topic {top.id}: {_qe}")
 
             persisted = {
                 "resource_id": str(resource.id) if resource else None,
@@ -372,11 +455,6 @@ def extract_pdf(pdf_path: Path, standard: int, subject: str) -> dict:
 
     # Return both AI result and the extracted full text plus persisted ids
     return {"ai": result, "full_text": full_text, "persisted": persisted}
-
-
-# =========================
-# ZIP PIPELINE
-# =========================
 
 def parse_chapters_from_local_zip(zip_path: str, standard: int, subject: str):
     base = Path(f"./e-book/{standard}/{subject}")
@@ -393,16 +471,3 @@ def parse_chapters_from_local_zip(zip_path: str, standard: int, subject: str):
             extracted = archive.extract(pdf, path=base)
             result_bundle = extract_pdf(Path(extracted), standard=standard, subject=subject)
             print(json.dumps(result_bundle, indent=2))
-            
-
-
-# =========================
-# ENTRY POINT
-# =========================
-
-# if __name__ == "__main__":
-#     parse_chapters_from_local_zip(
-#         zip_path="./maths.zip",
-#         standard=10,
-#         subject="Maths",
-#     )
