@@ -1,9 +1,11 @@
-from database.content import Chapter, Topic, Question
+from database.content import Chapter, Topic, Question, Chat
+from django.core.cache import cache
+import json
 
 from django.http import JsonResponse
-import json
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_exempt
+from django.db.models import Q
 import os
 import tempfile
 from pdfparser import parse_chapters_from_local_zip, extract_pdf, generate_AI_response
@@ -360,3 +362,225 @@ def generate_test_for_chapter(request):
         })
 
     return JsonResponse({"test": questions_out, "count": len(questions_out)}, status=200, json_dumps_params={"indent": 2})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def generate_chapter_note(request):
+    """
+    Request JSON: { "chapter_id": "<uuid>" }
+
+    Returns JSON containing:
+      - chapter metadata
+      - topics: list of { id, topic_name, summary } (summary prefers simplified_content and is cached per-topic)
+      - faq: recent unique Q/A pairs from Chat (scoped to chapter/topics in chapter)
+      - questions: list of 10 sampled questions (3 easy,3 medium,4 hard) from Question table for the chapter
+
+    This is intended to be used by the frontend to render a chapter note / PDF.
+    """
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+
+    chapter_id = payload.get("chapter_id")
+    if not chapter_id:
+        return JsonResponse({"error": "Please provide chapter_id"}, status=400)
+
+    try:
+        chapter = Chapter.objects.get(id=chapter_id)
+    except Chapter.DoesNotExist:
+        return JsonResponse({"error": "Chapter not found"}, status=404)
+
+    # Topics: prefer simplified_content, fallback to topic_content; cache per-topic to minimize DB hits
+    topics_qs = Topic.objects.filter(chapter=chapter).order_by("order", "created_at")
+    topics_out = []
+    for topic in topics_qs:
+        cache_key = f"topic_summary:{topic.id}"
+        summary = cache.get(cache_key)
+        if not summary:
+            simplified = getattr(topic, "simplified_content", None)
+            if simplified:
+                if isinstance(simplified, (list, tuple)):
+                    summary = "\n".join([str(x).strip() for x in simplified if x])
+                else:
+                    summary = str(simplified)
+            else:
+                summary = (topic.topic_content or "") if getattr(topic, "topic_content", None) else ""
+            # cache for 6 hours
+            cache.set(cache_key, summary, timeout=6 * 3600)
+
+        topics_out.append({
+            "id": str(topic.id),
+            "topic_name": topic.topic_name,
+            "summary": summary,
+        })
+
+    # FAQs: gather recent chats that are tied to this chapter or topics within it. Deduplicate by question_text.
+    chats_qs = Chat.objects.filter(Q(chapter=chapter) | Q(topic__chapter=chapter)).order_by("-created_at")
+    faq_out = []
+    seen_qs = set()
+    for c in chats_qs:
+        qtxt = (c.question_text or "").strip()
+        if not qtxt:
+            continue
+        if qtxt in seen_qs:
+            continue
+        seen_qs.add(qtxt)
+        faq_out.append({
+            "question": qtxt,
+            "answer": (c.answer_text or "").strip(),
+            "chat_id": str(c.id),
+            "created_at": c.created_at.isoformat() if getattr(c, 'created_at', None) else None,
+        })
+        if len(faq_out) >= 10:
+            break
+
+    # Questions: sample 3 easy, 3 medium, 4 hard (fall back to available pool)
+    questions_qs = Question.objects.filter(chapter=chapter)
+    easy_qs = list(questions_qs.filter(question_level=Question.EASY))
+    medium_qs = list(questions_qs.filter(question_level=Question.MEDIUM))
+    hard_qs = list(questions_qs.filter(question_level=Question.HARD))
+
+    desired = {Question.EASY: 3, Question.MEDIUM: 3, Question.HARD: 4}
+
+    def _sample_pool(pool, count):
+        if not pool:
+            return []
+        if len(pool) <= count:
+            return pool.copy()
+        return random.sample(pool, count)
+
+    selected = []
+    selected.extend(_sample_pool(easy_qs, desired[Question.EASY]))
+    selected.extend(_sample_pool(medium_qs, desired[Question.MEDIUM]))
+    selected.extend(_sample_pool(hard_qs, desired[Question.HARD]))
+
+    remaining = [q for q in questions_qs if q not in selected]
+    while len(selected) < sum(desired.values()) and remaining:
+        selected.append(remaining.pop(0))
+
+    # Ensure stable ordering: by level then randomize within same level
+    random.shuffle(selected)
+
+    questions_out = []
+    for q in selected:
+        questions_out.append({
+            "id": str(q.id),
+            "topic": q.topic.topic_name if q.topic else None,
+            "level": q.get_question_level_display(),
+            "question_text": q.question_text,
+            "options": q.options or {},
+            "correct_answer": q.correct_answer,
+            "explanation": q.explanation,
+        })
+
+    chapter_payload = {
+        "id": str(chapter.id),
+        "chapter_name": chapter.chapter_name,
+        "chapter_number": chapter.chapter_number,
+        "standard": chapter.standard,
+        "subject": chapter.subject,
+    }
+
+    return JsonResponse(
+        {
+            "chapter": chapter_payload,
+            "topics": topics_out,
+            "faq": faq_out,
+            "questions": questions_out,
+        },
+        status=200,
+        json_dumps_params={"indent": 2},
+    )
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def ask_topic_question(request):
+    try:
+        payload = json.loads(request.body.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+
+    topic_id = payload.get("topic_id")
+    chapter_id = payload.get("chapter_id")
+    question_text = payload.get("question_text")
+
+    if not topic_id or not question_text:
+        return JsonResponse({"error": "topic_id and question_text are required"}, status=400)
+
+    # fetch topic (and optional chapter)
+    try:
+        topic = Topic.objects.get(id=topic_id)
+    except Topic.DoesNotExist:
+        return JsonResponse({"error": "topic not found"}, status=404)
+
+    chapter = None
+    if chapter_id:
+        try:
+            chapter = Chapter.objects.get(id=chapter_id)
+        except Chapter.DoesNotExist:
+            return JsonResponse({"error": "chapter not found"}, status=404)
+
+    # cache key per topic
+    cache_key = f"topic_summary:{topic_id}"
+    summary = cache.get(cache_key)
+    if not summary:
+        # prefer simplified_content (stored as list) else topic_content (text)
+        simplified = getattr(topic, "simplified_content", None)
+        if simplified:
+            if isinstance(simplified, (list, tuple)):
+                summary = "\n".join([str(x).strip() for x in simplified if x])
+            else:
+                summary = str(simplified)
+        else:
+            summary = (topic.topic_content or "") if getattr(topic, "topic_content", None) else ""
+        # store for 24 hours
+        cache.set(cache_key, summary, timeout=24 * 3600)
+
+    # build prompt safely (avoid unescaped braces in f-strings)
+    prompt = (
+        "You are a helpful tutor. Use the following topic summary as context to answer the question.\n\n"
+        "Topic summary:\n"
+        + summary
+        + "\n\nQuestion:\n"
+        + question_text
+        + "\n\nAnswer concisely and clearly. If the answer requires steps, present them numbered. "
+        "If the question cannot be answered from the summary, say so and provide a short suggestion what to read next."
+    )
+
+    try:
+        resp = generate_AI_response(prompt=prompt)
+        # extract text from helper response defensively
+        answer_text = None
+        try:
+            # handle OpenAI-like response objects
+            answer_text = resp.choices[0].message.content.strip()
+        except Exception:
+            try:
+                answer_text = str(resp).strip()
+            except Exception:
+                answer_text = ""
+    except Exception as e:
+        return JsonResponse({"error": f"AI call failed: {str(e)}"}, status=500)
+
+    # persist chat entry
+    try:
+        user = request.user if getattr(request, "user", None) and request.user.is_authenticated else None
+        chat = Chat.objects.create(
+            user=user,
+            topic=topic,
+            chapter=chapter,
+            question_text=question_text,
+            answer_text=answer_text,
+        )
+    except Exception as e:
+        return JsonResponse({"error": f"failed to save chat: {str(e)}"}, status=500)
+
+    return JsonResponse(
+        {
+            "chat_id": str(chat.id),
+            "answer": answer_text,
+        },
+        status=200,
+    )
