@@ -237,3 +237,100 @@ Testing
 Contact / Next steps
 - If you want, generate OpenAPI/Swagger from views or migrate endpoints to Django REST Framework for cleaner serializations and validation.
 - I can produce an OpenAPI YAML for these endpoints if needed.
+
+## API Endpoints (Quick Reference)
+
+Base URL (dev): `http://127.0.0.1:8000/api/`  
+All JSON endpoints expect `Content-Type: application/json` unless noted.
+
+1) POST /api/upload_and_parse_pdf
+- Description: Upload a PDF or ZIP and process it (multipart/form-data).
+- Body (form-data):
+  - `file` (File) - .pdf or .zip
+  - `standard` (string/int)
+  - `subject` (string)
+- Example:
+```bash
+curl -X POST "http://127.0.0.1:8000/api/upload_and_parse_pdf" \
+  -F "file=@/path/to/book.pdf" \
+  -F "standard=10" \
+  -F "subject=Math"
+```
+
+2) POST /api/get_chapter_details
+- Description: Get chapter metadata + topics (original + simplified content).
+- Body (JSON): `{ "chapter_id": "<uuid>" }`
+- Example:
+```bash
+curl -X POST "http://127.0.0.1:8000/api/get_chapter_details" \
+  -H "Content-Type: application/json" \
+  -d '{"chapter_id":"ae632f04-7954-453b-91ee-e5bafcaa70e9"}'
+```
+
+3) POST /api/make_topic_easier
+- Description: Return existing simplified content if present; if `force:true` or none exists, call AI, save `Topic.simplified_content` and return it.
+- Body (JSON): `{ "topic_id":"<uuid>", "force": true|false }`
+- Example:
+```bash
+curl -X POST "http://127.0.0.1:8000/api/make_topic_easier" \
+  -H "Content-Type: application/json" \
+  -d '{"topic_id":"<topic-uuid>"}'
+```
+
+4) GET /api/get_all_chapters
+- Description: List basic chapter metadata.
+- Example:
+```bash
+curl "http://127.0.0.1:8000/api/get_all_chapters"
+```
+
+5) GET/POST /api/generate_test_for_chapter
+- Description: Generate a test from questions. Provide either `topic_id` or `chapter_id`.
+- Example:
+```bash
+curl "http://127.0.0.1:8000/api/generate_test_for_chapter?chapter_id=<uuid>"
+```
+or
+```bash
+curl -X POST "http://127.0.0.1:8000/api/generate_test_for_chapter" \
+  -H "Content-Type: application/json" \
+  -d '{"topic_id":"<uuid>"}'
+```
+
+6) POST /api/ask_topic_question
+- Description: Ask a question scoped to a topic (uses cached topic summary as context). Saves the Q/A to `Chat`.
+- Body (JSON): `{ "topic_id":"<uuid>", "chapter_id":"<uuid>", "question_text":"..." }`
+- Example:
+```bash
+curl -X POST "http://127.0.0.1:8000/api/ask_topic_question" \
+  -H "Content-Type: application/json" \
+  -d '{"topic_id":"<uuid>", "question_text":"What is ...?"}'
+```
+
+7) POST /api/generate_chapter_note
+- Description: Generate structured chapter note: Topics (summaries), FAQs (from Chat), and 10 sample Questions (3 easy,3 medium,4 hard).
+- Body (JSON): `{ "chapter_id":"<uuid>" }`
+- Example:
+```bash
+curl -X POST "http://127.0.0.1:8000/api/generate_chapter_note" \
+  -H "Content-Type: application/json" \
+  -d '{"chapter_id":"<uuid>"}'
+```
+
+8) Authentication / User management
+- POST /api/login — form-data or JSON: `{ "username":"..", "password":".." }`
+- POST /api/register — restricted: create user (only superuser/school-admins via API)
+- Invitation flow: POST /api/create_invite (admin) and POST /api/accept_invite (invitee)
+
+Notes, behaviors & best practices
+- File uploads: use `multipart/form-data` (file must be in `request.FILES`).
+- Topic simplification: first call returns cached `simplified_content` if present; pass `"force": true` to regenerate.
+- Caching: topic summaries are cached to reduce DB reads; cache invalidation occurs on updates/deletes (signals).
+- Questions persisted: generated questions are saved in the `Question` table. Q/A interactions saved in `Chat`.
+- For student-facing endpoints, remove `correct_answer` and `explanation` from responses.
+- Environment: set `OPENAI_API_KEY` in production; do not commit keys.
+
+If you want, I can:
+- Add full OpenAPI (Swagger) spec for these endpoints,
+- Add example response payloads for each endpoint,
+- Or generate curl + Postman collections for testing.
