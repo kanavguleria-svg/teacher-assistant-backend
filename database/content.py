@@ -1,6 +1,7 @@
 import uuid
 from django.db import models
-
+from django.conf import settings
+from models import User
 
 class Resource(models.Model):
     id = models.UUIDField(
@@ -197,3 +198,56 @@ class Question(models.Model):
 
     def __str__(self):
         return self.question_text[:80]
+
+
+class Chat(models.Model):
+    """
+    Stores Q/A interactions for a user tied to a topic/chapter.
+    """
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="chats",
+        default=None
+    )
+
+    topic = models.ForeignKey(
+        Topic,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="chats",
+    )
+
+    chapter = models.ForeignKey(
+        Chapter,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="chats",
+    )
+
+    question_text = models.TextField()
+    answer_text = models.TextField()
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "chats"
+        indexes = [
+            models.Index(fields=["user"]),
+            models.Index(fields=["topic"]),
+            models.Index(fields=["chapter"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        return f"chat:{self.id} user:{getattr(self.user,'id',None)} at {self.created_at}"
