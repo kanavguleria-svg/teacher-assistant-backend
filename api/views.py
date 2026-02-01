@@ -187,8 +187,9 @@ def make_topic_easier(request):
     except Exception:
         payload = {}
 
-    chapter_id = payload.get("chapter_id")
-    topic_id = payload.get("topic_id")
+    chapter_id = payload.get("chapter_id") or request.POST.get("chapter_id")
+    topic_id = payload.get("topic_id") or request.POST.get("topic_id")
+
     if not topic_id:
         return JsonResponse({"error": "Please provide topic_id"}, status=400)
 
@@ -298,7 +299,7 @@ def get_topic_details(request):
     
 
 @csrf_exempt
-@require_http_methods(["GET"])
+@require_http_methods(["POST","GET"])
 def generate_test_for_chapter(request):
     # Accept JSON body, but also support query params for GET requests.
     try:
@@ -308,7 +309,6 @@ def generate_test_for_chapter(request):
 
     topic_id = payload.get("topic_id") or request.GET.get("topic_id") or request.POST.get("topic_id")
     chapter_id = payload.get("chapter_id") or request.GET.get("chapter_id") or request.POST.get("chapter_id")
-    print("the topic id is", topic_id, chapter_id)
     # Require at least one of topic_id OR chapter_id (not both)
     if not (topic_id or chapter_id):
         return JsonResponse({"error": "Please provide topic_id or chapter_id"}, status=400)
