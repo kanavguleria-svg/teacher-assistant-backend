@@ -417,24 +417,24 @@ def generate_chapter_note(request):
         })
 
     # FAQs: gather recent chats that are tied to this chapter or topics within it. Deduplicate by question_text.
-    chats_qs = Chat.objects.filter(Q(chapter=chapter) | Q(topic__chapter=chapter)).order_by("-created_at")
-    faq_out = []
-    seen_qs = set()
-    for c in chats_qs:
-        qtxt = (c.question_text or "").strip()
-        if not qtxt:
-            continue
-        if qtxt in seen_qs:
-            continue
-        seen_qs.add(qtxt)
-        faq_out.append({
-            "question": qtxt,
-            "answer": (c.answer_text or "").strip(),
-            "chat_id": str(c.id),
-            "created_at": c.created_at.isoformat() if getattr(c, 'created_at', None) else None,
-        })
-        if len(faq_out) >= 10:
-            break
+    # chats_qs = Chat.objects.filter(Q(chapter=chapter) | Q(topic__chapter=chapter)).order_by("-created_at")
+    # faq_out = []
+    # seen_qs = set()
+    # for c in chats_qs:
+    #     qtxt = (c.question_text or "").strip()
+    #     if not qtxt:
+    #         continue
+    #     if qtxt in seen_qs:
+    #         continue
+    #     seen_qs.add(qtxt)
+    #     faq_out.append({
+    #         "question": qtxt,
+    #         "answer": (c.answer_text or "").strip(),
+    #         "chat_id": str(c.id),
+    #         "created_at": c.created_at.isoformat() if getattr(c, 'created_at', None) else None,
+    #     })
+    #     if len(faq_out) >= 10:
+    #         break
 
     # Questions: sample 3 easy, 3 medium, 4 hard (fall back to available pool)
     questions_qs = Question.objects.filter(chapter=chapter)
@@ -487,7 +487,7 @@ def generate_chapter_note(request):
         {
             "chapter": chapter_payload,
             "topics": topics_out,
-            "faq": faq_out,
+            # "faq": faq_out,
             "questions": questions_out,
         },
         status=200,
@@ -506,6 +506,8 @@ def ask_topic_question(request):
     chapter_id = payload.get("chapter_id")
     question_text = payload.get("question_text")
 
+    print(topic_id, chapter_id, question_text)
+
     if not topic_id or not question_text:
         return JsonResponse({"error": "topic_id and question_text are required"}, status=400)
 
@@ -514,6 +516,8 @@ def ask_topic_question(request):
         topic = Topic.objects.get(id=topic_id)
     except Topic.DoesNotExist:
         return JsonResponse({"error": "topic not found"}, status=404)
+
+    print("Found topic:", topic)
 
     chapter = None
     if chapter_id:
@@ -564,22 +568,22 @@ def ask_topic_question(request):
     except Exception as e:
         return JsonResponse({"error": f"AI call failed: {str(e)}"}, status=500)
 
-    # persist chat entry
-    try:
-        user = request.user if getattr(request, "user", None) and request.user.is_authenticated else None
-        chat = Chat.objects.create(
-            user=user,
-            topic=topic,
-            chapter=chapter,
-            question_text=question_text,
-            answer_text=answer_text,
-        )
-    except Exception as e:
-        return JsonResponse({"error": f"failed to save chat: {str(e)}"}, status=500)
+    # # persist chat entry
+    # try:
+    #     user = request.user if getattr(request, "user", None) and request.user.is_authenticated else None
+    #     chat = Chat.objects.create(
+    #         user=user,
+    #         topic=topic,
+    #         chapter=chapter,
+    #         question_text=question_text,
+    #         answer_text=answer_text,
+    #     )
+    # except Exception as e:
+    #     return JsonResponse({"error": f"failed to save chat: {str(e)}"}, status=500)
 
     return JsonResponse(
         {
-            "chat_id": str(chat.id),
+            # "chat_id": str(chat.id),
             "answer": answer_text,
         },
         status=200,

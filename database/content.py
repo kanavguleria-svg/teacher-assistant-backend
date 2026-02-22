@@ -1,7 +1,9 @@
 import uuid
 from django.db import models
 from django.conf import settings
-from models import User
+# from models import User
+from database.models import User
+
 
 class Resource(models.Model):
     id = models.UUIDField(
