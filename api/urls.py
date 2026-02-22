@@ -14,5 +14,7 @@ urlpatterns = [
     path('get_topic_details', views.get_topic_details, name = "api-get-topic-details"),
     path('get_all_chapters', views.get_all_chapters, name = "api-get-all-chapters"),
     path('generate_test_for_chapter', views.generate_test_for_chapter, name = "api-generate_test_for_chapter"),
+    path('ask_topic_question', views.ask_topic_question, name = "api-ask-topic-question"),
+    path('generate_chapter_note', views.generate_chapter_note, name = "api-generate-chapter-note"),
     # path('synthesize_final_chapter', views.synthesize_final_chapter, name = "api-synthesize-final-chapter"),
 ]
